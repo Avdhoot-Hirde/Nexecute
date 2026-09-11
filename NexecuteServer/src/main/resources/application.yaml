@@ -1,0 +1,5 @@
+spring:
+  application:
+    name: NexecuteServer
+server:
+  port: 8080
