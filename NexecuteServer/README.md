@@ -1,135 +1,182 @@
-# Nexecute sandbox execution
+# NexecuteServer
 
-The Spring server runs on the host with Java 21 and Docker CLI on PATH. Docker
-Desktop must use Linux containers. The local Docker daemon must be able to mount
-the server's temporary directory (Docker Desktop handles Windows paths). Remote
-Docker daemons and containerized API deployments need a shared source path and
-are not configured by this setup.
+The Java 21 / Spring Boot 4.1 backend for [Nexecute](../README.md). It handles authentication, Docker-isolated code execution, WebSocket streaming, per-user PostgreSQL history, and GitHub file commits.
 
-Build the runner once from `NexecuteServer`:
+## Prerequisites
+
+- Java 21 and Maven, or the included Maven wrapper.
+- PostgreSQL with an existing database and database user.
+- A running local Docker daemon and Docker CLI on PATH. Docker Desktop must use Linux containers.
+- GitHub OAuth client credentials and application secrets.
+
+The API runs on the host. Docker must be able to bind-mount the API's temporary source directory. Docker Desktop handles local Windows paths; remote daemons or containerized API deployments need additional shared-path configuration.
+
+## Configuration
+
+Set these environment variables in the shell or IDE that launches Spring Boot. A server `.env` file is **not automatically loaded**.
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `db` | Yes | PostgreSQL JDBC URL, e.g. `jdbc:postgresql://localhost:5432/nexecute` |
+| `db_user` | Yes | Database username |
+| `db_pass` | Yes | Database password |
+| `github_client_id` | Yes | GitHub OAuth app client ID |
+| `github_client_secret` | Yes | GitHub OAuth app client secret |
+| `jwt` | Yes | Strong random signing secret, at least 32 UTF-8 bytes; used directly, not Base64-decoded |
+| `TOKEN_ENCRYPTOR_PASSWORD` | Yes | Secret for encrypting stored GitHub tokens |
+| `TOKEN_ENCRYPTOR_SALT` | Yes | Hex-encoded encryption salt, at least 8 bytes (16 hex characters) |
+| `SANDBOX_IMAGE` | No | Defaults to `nexecute-sandbox:local`; image must already exist locally |
+| `COOKIE_SECURE` | No | Controls the OAuth refresh cookie; defaults to `false` for local development |
+| `APP_FRONTEND_URL` | No | Defaults to `http://localhost:5173` |
+| `APP_CORS_ALLOWED_ORIGINS` | No | Defaults to `http://localhost:5173`; use the actual browser origin |
+| `SERVER_PORT` | No | Defaults to `8080` |
+
+Example PowerShell configuration (replace every placeholder):
 
 ```powershell
-docker build -t nexecute-sandbox:local docker/sandbox
+$env:db='jdbc:postgresql://localhost:5432/nexecute'
+$env:db_user='<database-user>'
+$env:db_pass='<database-password>'
+$env:github_client_id='<oauth-client-id>'
+$env:github_client_secret='<oauth-client-secret>'
+$env:jwt='<strong-random-secret-at-least-32-bytes>'
+$env:TOKEN_ENCRYPTOR_PASSWORD='<strong-random-encryption-password>'
+$env:TOKEN_ENCRYPTOR_SALT='<random-salt-as-16-or-more-hex-characters>'
 ```
 
-Set the existing application environment variables: `db` (PostgreSQL JDBC URL),
-`db_user`, `db_pass`, `github_client_id`, `github_client_secret`, `jwt`,
-`TOKEN_ENCRYPTOR_PASSWORD`, and `TOKEN_ENCRYPTOR_SALT`. Then run `mvn spring-boot:run`.
-`SANDBOX_IMAGE` overrides the runner image; images are never pulled during requests.
-Copy the UI's `.env.example` to `.env.local` and start its Vite dev server. Sign in
-for interactive execution; the UI attaches its access token to the WebSocket URL.
-Use WSS outside localhost and redact token query parameters from proxy access logs.
+Keep encryption settings stable across restarts so stored GitHub tokens remain readable. Changing them requires users to reconnect GitHub. Never commit real credentials.
 
-## API
+For local GitHub OAuth, configure the application callback as `http://localhost:8080/login/oauth2/code/github` and homepage as `http://localhost:5173`. The configured scopes are `read:user`, `user:email`, and `repo`. The callback is currently explicit in [application.yaml](src/main/resources/application.yaml); update it when changing the backend origin.
 
-- `POST /api/trial/execute`: public batch execution, used by the UI fallback.
-- `POST /api/execute`: same operation, requires the existing bearer authentication.
-- `ws://localhost:8080/ws/execute?token=...`: authenticated interactive execution;
-  `/ws/ide` is an alias. Origins follow `app.cors.allowed-origins`.
+**Cookie caveat:** the OAuth refresh cookie uses `COOKIE_SECURE`, but the password-login refresh cookie currently sets `Secure=true` directly. The OAuth session cookie also defaults to secure in `application.yaml`. For local plain HTTP, the session setting can be overridden with `SERVER_SERVLET_SESSION_COOKIE_SECURE=false`; this does not change the password-login cookie. Use local HTTPS or adjust that handler if your browser rejects its cookie. Deployed environments should use HTTPS and secure cookies.
 
-HTTP body: `{"language":"python","code":"print(input())","stdin":"Ada\n"}`.
-Success returns `stdout`, `stderr`, `exitCode`, and `status: completed`. Program
-failure returns HTTP 422 with the same fields and `status: error`; invalid requests
-return 400 and exhausted capacity returns 429.
+## Build and run
 
-WebSocket accepts `execute` with `language`, `code`, and optional `stdin`, followed
-by `stdin` messages whose `data` is a single line. The server appends a newline,
-including for blank input. Output events are `stdout`/`stderr` with `data`; status
-events use `running`, `completed`, or `error` plus a final `exitCode`. Input is
-accepted throughout a run; there is no heuristic prompt detection or server echo.
-Python is unbuffered; C++ programs should flush prompts. Both execution APIs accept
-`file` from the editor, such as `Main.java`. Java compiles that file and runs the
-class with the same name (`Main`), without a package declaration. The source class
-must match the filename; code is not automatically rewritten. All supported languages
-use the submitted filename, with the appropriate language-specific
-extension. Only simple filenames are accepted, not paths. Older clients omitting
-`file` retain the `Solution` default. Rebuild the sandbox image after this update.
-JavaScript and compiled TypeScript use Node.js. Only standard installed libraries
-are available; the sandbox cannot download dependencies.
+From this directory, after configuring the environment:
 
-| Language | Extension | Runtime/compiler |
+```powershell
+docker info
+docker build -t nexecute-sandbox:local docker/sandbox
+mvn spring-boot:run
+```
+
+Use `.\mvnw.cmd spring-boot:run` on Windows or `./mvnw spring-boot:run` on macOS/Linux if using the Maven wrapper. An installed Maven is an alternative if the wrapper cannot download/start its distribution.
+
+The API listens at `http://localhost:8080`; `GET /auth` returns a basic running response. Build the [frontend](../NexecuteUI/README.md) separately. Rebuild the sandbox image after editing its Dockerfile or launch script. No image is pulled during an execution request.
+
+## API reference
+
+Authenticated HTTP requests use `Authorization: Bearer <access-token>`.
+
+| Method | Path | Purpose |
 | --- | --- | --- |
-| Python | `.py` | Python 3, unbuffered |
-| Java | `.java` | JDK 21 |
-| JavaScript | `.js` | Node.js |
-| TypeScript | `.ts` | tsc to CommonJS, then Node.js |
-| C | `.c` | GCC, C17 |
-| C++ | `.cpp` | G++, C++17 |
-| Go | `.go` | Go, single-file `package main`, standard library |
-| Rust | `.rs` | rustc, edition 2021, standard library |
-| Ruby | `.rb` | Ruby with synchronized stdout |
-| PHP | `.php` | PHP CLI, include `<?php` |
+| GET | `/auth` | Basic running response |
+| POST | `/auth/register` | Register with `userName`, `email`, `password`, `confirmPassword` |
+| POST | `/auth/login` | Login with `userName` and `password` |
+| GET | `/auth/me` | Current authenticated user |
+| POST | `/auth/refresh` | Refresh access token using the refresh cookie |
+| POST | `/auth/logout` | Clear authentication/refresh cookie |
+| GET | `/oauth2/authorization/github` | Begin GitHub OAuth |
+| POST | `/api/trial/execute` | Public batch execution; saves history when authenticated |
+| POST | `/api/execute` | Authenticated batch execution |
+| GET | `/api/history` | Current user's runs, newest first |
+| GET | `/api/history/{id}` | Current user's saved entry; returns 404 for another user's entry |
+| POST | `/api/github/push` | Authenticated create/update of a repository file |
+| WebSocket | `/ws/execute?token=...` | Authenticated live execution; `/ws/ide` is an alias |
 
-C/C++ programs should explicitly flush prompts before reading interactive input.
-TypeScript snippets using Node-specific globals can declare their types locally;
-third-party type packages are not installed. Compiler work uses the same memory
-and time budget as program execution.
+### Batch execution
 
-## Limits and lifecycle
+```json
+{
+  "language": "java",
+  "file": "Main.java",
+  "code": "class Main { public static void main(String[] args) { System.out.println(new java.util.Scanner(System.in).nextInt()); } }",
+  "stdin": "42\n"
+}
+```
 
-Each run receives a fresh non-root container, read-only root and source, no network,
-no capabilities, no privilege escalation, Docker's default seccomp profile, 1 CPU,
-256 MiB memory with no additional swap, 64 processes, a 128 MiB writable work area,
-and 16 MiB temporary area. Source and total stdin are each limited to 64 KiB;
-combined output is capped at 256 KiB. Four runs may execute concurrently per server.
-The container enforces a 30-second deadline including compilation/input waits;
-the host also bounds Docker operations. Disconnect, output overflow, completion,
-and graceful shutdown force-remove the container and delete its source directory.
-An abrupt server/daemon crash may leave stopped containers and temporary files;
-containers are labeled `nexecute.sandbox=true` for operator cleanup.
+Responses contain `stdout`, `stderr`, `exitCode`, and `status` (`completed` or `error`). Successful execution returns HTTP 200; execution failure returns 422, invalid requests 400, and exhausted capacity 429. Authenticated responses include the saved `history` entry, or `historyError` if persistence fails. Batch stdin is closed after the supplied content; an empty value cannot support later interactive input.
 
-Docker containers share the host kernel. Run this worker on a dedicated machine
-or VM for public untrusted workloads, keep Docker patched, and rate-limit the
-public trial endpoint at your reverse proxy. Never expose the Docker daemon or
-mount its socket inside the runner. Docker's security model is documented at
-https://docs.docker.com/engine/security/.
+### Live execution
 
-AI analysis receives an explicit unavailable response.
+Connect with the access token and an allowed origin. Send an `execute` message containing `language`, `file`, `code`, and optional initial `stdin`. While the process runs, send `{"type":"stdin","data":"42"}`; each message appends a newline, including blank lines.
 
-## Per-user code history
+The server emits `stdout`/`stderr` chunks, `status` updates, and a `history` event after saving the run. Database failures are reported as `history_error`. Input can be submitted throughout a live run; prompts are not detected heuristically or echoed by the server. Closing the connection cancels its run.
 
-Authenticated HTTP and WebSocket runs save source, filename, language, status,
-exit code, and timestamp to PostgreSQL, linked to the authenticated user. Successful,
-failed, and disconnected live runs are recorded after execution finishes. Anonymous
-trials are not saved. Persistence failures are shown separately from execution output.
+See the complete [message protocol](../NexecuteUI/docs/ide-terminal.md). Use WSS in deployed environments and redact token query parameters from access logs.
 
-`GET /api/history` lists the current user's runs, newest first. `GET /api/history/{id}`
-returns an entry only for its owner, otherwise 404. The History page and IDE sidebar
-restore the selected source, language, and filename. UI history is cleared on account
-changes and is not stored in browser persistence.
+## Languages
 
-Restart the server to add nullable `language`, `status`, and `exit_code` columns using
-the existing `spring.jpa.hibernate.ddl-auto=update` configuration. Deployments without
-automatic schema updates must add these columns through their migration process.
-Older entries infer language from their filename. Tests use an isolated H2 database;
-they do not modify the configured PostgreSQL database.
+| Language identifier | Extension | Execution |
+| --- | --- | --- |
+| `python` | `.py` | Python 3, unbuffered |
+| `java` | `.java` | JDK 21 compilation and execution |
+| `javascript` | `.js` | Node.js |
+| `typescript` | `.ts` | tsc to CommonJS, then Node.js |
+| `c` | `.c` | GCC, C17 |
+| `cpp` | `.cpp` | G++, C++17 |
+| `go` | `.go` | Go build, standard library, modules/downloads disabled |
+| `rust` | `.rs` | rustc, edition 2021, standard library |
+| `ruby` | `.rb` | Ruby with synchronized stdout |
+| `php` | `.php` | PHP CLI |
 
-## Push the current file to GitHub
+The frontend filename is validated and used inside the sandbox. Only simple filenames are accepted, without folders or spaces. Omitting `file` uses `Solution` with the language extension. Java's entry class must match the filename without a package declaration; source code is not rewritten. Go requires `package main`; PHP source includes `<?php`.
 
-Sign in with GitHub, then use the IDE's GitHub push form: enter an existing
-`owner/repository`, target branch, relative file path, and commit message. Clicking
-**Push current file** commits the editor's current content to that path and returns
-a GitHub link. The target repository and branch must already exist and allow the
-user to write. A new path creates a file; an existing file is updated using its
-current SHA. The endpoint is authenticated `POST /api/github/push` with JSON fields
-`repository`, `branch`, `path`, `message`, and `content` (up to 1 MiB UTF-8).
+External dependencies are not installed during execution. TypeScript programs using Node-specific globals can declare their types locally. C/C++ programs should flush prompts before waiting for input. Node programs must close input handles when finished. Compilation and input waits share the execution deadline.
 
-GitHub OAuth needs the configured `repo` scope. Tokens remain encrypted on the
-server and are never returned to the browser. If you connected GitHub before the
-token-encryptor configuration fix, sign in with GitHub again to refresh the stored
-token. Conflicts, revoked credentials, access restrictions and branch rules return
-actionable errors; writes are not automatically retried. This feature commits one
-editor file per click and does not create repositories or branches.
+## Sandbox limits
 
-## Verification
+| Resource | Limit |
+| --- | --- |
+| Concurrent executions | 4 per server process |
+| Container deadline | 30 seconds, including compilation and input waits |
+| CPU | 1 CPU |
+| Memory | 256 MiB, no additional swap |
+| Processes | 64 |
+| Source / total stdin | 64 KiB each, UTF-8 |
+| Combined output | 256 KiB |
+| Writable work area | 128 MiB tmpfs |
+| Temporary area | 16 MiB tmpfs |
+
+Each run uses a non-root container, read-only root filesystem and source mount, disabled networking, dropped capabilities, no privilege escalation, and Docker's default seccomp profile. Go build files use the bounded work area. Host-side waits also bound Docker operations.
+
+Completion, cancellation, overflow, and graceful shutdown remove the container and source directory. Abrupt host/daemon failure may leave stopped containers or temporary files; sandbox containers carry the `nexecute.sandbox=true` label for operator inspection.
+
+Containers share the host kernel. Use a dedicated worker machine or VM for public untrusted workloads, keep Docker patched, rate-limit the public trial endpoint, and never expose the daemon socket to submitted code.
+
+## Database history
+
+Accepted authenticated runs save source, filename, language, status, exit code, timestamp, and owner after execution ends. Successes, failures, and disconnected live runs are recorded. Anonymous trials are not saved; database failures are shown separately from execution output.
+
+The History page and IDE sidebar retrieve owner-scoped entries and restore the selected code. History is not persisted in browser storage and is cleared from UI memory on account changes. Older database rows without a language infer it from their filename.
+
+The current JPA setting is `ddl-auto: update`: starting the server creates/updates mapped tables, but does not create the PostgreSQL database itself. Deployments that disable automatic updates must manage schema migrations, including the history fields `language`, `status`, and `exit_code`.
+
+## GitHub commits
+
+`POST /api/github/push` accepts `repository` (`owner/repository`), `branch`, `path`, `message`, and `content` (up to 1 MiB UTF-8). The repository and branch must exist and permit the connected user to write.
+
+The server decrypts the user's stored OAuth token, looks up the current file SHA, and creates or updates the file through GitHub. The response includes `htmlUrl`, `commitSha`, `path`, and `branch`. Access restrictions, conflicts, revoked credentials, and repository rules produce actionable errors. Writes are not automatically retried. This operation commits one editor file; it does not create branches or repositories.
+
+AI analysis is not implemented; the WebSocket handler returns an unavailable message for analysis requests.
+
+## Tests
+
+Database, protocol, validation, and GitHub mock tests:
 
 ```powershell
 mvn '-Dtest=DockerExecutionServiceTest,ExecutionProtocolTest,GithubPushServiceTest,CodeHistoryDatabaseTest,ExecutionHistoryTest' test
+```
+
+Actual Docker execution tests (image must be built):
+
+```powershell
 $env:NEXECUTE_DOCKER_TESTS='true'
 mvn '-Dtest=DockerSandboxIntegrationTest' test
 ```
 
-Integration tests require the built image and cover all ten languages, batch EOF,
-interactive/blank stdin, isolation, output overflow, compiler errors, timeout, and
-cancellation. Existing application-context tests additionally require database and
-authentication configuration. Frontend checks: `node --test tests/ide-terminal.test.mjs`.
+On macOS/Linux: `NEXECUTE_DOCKER_TESTS=true mvn -Dtest=DockerSandboxIntegrationTest test`.
+
+History tests use temporary H2 storage rather than the configured PostgreSQL database. GitHub tests use a local mock HTTP server and do not publish commits. Docker tests cover all ten languages, custom filenames, batch/live stdin, isolation, output limits, errors, cancellation, and timeouts. Full application startup needs the real environment configuration.
+
+[Project overview](../README.md) · [Frontend documentation](../NexecuteUI/README.md)
