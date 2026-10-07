@@ -65,7 +65,6 @@ function Home() {
 
         <div className="my-10 w-full xl:w-1/2 flex justify-center xl:justify-end relative z-10">
           <div className="editor-frame w-fit h-fit xl:mr-18 p-3 rounded-xl">
-            <p className="mb-3 px-1 text-sm text-slate-300">Try it here — no sign-in required.</p>
             <EditorProvider>
               <CodeEditor className="z-0" />
             </EditorProvider>
