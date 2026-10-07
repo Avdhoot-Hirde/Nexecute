@@ -51,7 +51,7 @@ The filename is sent to the backend in both HTTP and WebSocket execution. For Ja
 
 - **Live connection:** Sign in and configure the WebSocket URL. Run the code, type into the console, and press Enter to submit a line. Blank lines are supported. The UI waits for the connection before starting a live run.
 - **HTTP mode:** Enter all stdin in **Input for next run** before running. The request returns after execution finishes; it cannot accept input afterward.
-- **Homepage trial:** Uses HTTP batch execution and its stdin field.
+- **Homepage trial:** Runs without sign-in using HTTP batch execution and its stdin field. Requests omit cookies and access tokens, so homepage trial runs are not saved, even if an account is signed in elsewhere in the UI. Use the IDE for saved history.
 
 Output is appended as chunks, preserving line breaks. User-submitted input is echoed locally. The server does not infer when a program is asking for input. Programs should flush prompts where required by their runtime.
 

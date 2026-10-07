@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { EditorContext } from './EditorContext';
 import { IDE_LANGUAGES } from '../Store/IdeStore';
-import { authFetch } from '../Store/AuthStore';
+import { executeTrial } from '../api/trial';
 
 export function EditorProvider({ children }) {
   const [code, setCode] = useState("print('Hello World!!')");
@@ -15,10 +15,9 @@ export function EditorProvider({ children }) {
     setOutput('');
 
     try {
-      const response = await authFetch('/api/trial/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, language, stdin: input, file: IDE_LANGUAGES.find(item => item.value === language)?.file }),
+      const response = await executeTrial({
+        code, language, stdin: input,
+        file: IDE_LANGUAGES.find(item => item.value === language)?.file,
       });
       const data = await response.json();
 
