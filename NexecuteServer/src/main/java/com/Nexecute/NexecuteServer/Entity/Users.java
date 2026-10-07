@@ -7,11 +7,13 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(name = "users", uniqueConstraints = {
-        @UniqueConstraint(columnNames = "email"),
-        @UniqueConstraint(columnNames = "userName"),
-        @UniqueConstraint(columnNames = "gitHubId")
-})
+@Table(
+        name = "users",
+        indexes = {
+            @Index(name = "idx_userName",columnList = "userName"),
+            @Index(name = "idx_gitHubUsername",columnList = "gitHubUsername")
+        }
+)
 @Getter
 @Setter
 @AllArgsConstructor
@@ -40,6 +42,9 @@ public class Users {
     @Column(columnDefinition = "TEXT")
     private String gitHubAccessToken;
 
+    @Column
+    private String tokenScope;
+
     @Column(nullable = false)
     @Builder.Default
     private boolean emailVerified = false;
@@ -55,6 +60,7 @@ public class Users {
 
     @Column()
     private Instant lastLoginAt;
+
 
     public enum Role { USER, ADMIN }
 

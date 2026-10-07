@@ -1,12 +1,15 @@
 package com.Nexecute.NexecuteServer.Service;
 
 import com.Nexecute.NexecuteServer.Entity.Users;
+import com.Nexecute.NexecuteServer.Filter.AppUserPrincipal;
 import com.Nexecute.NexecuteServer.Repo.UserRepo;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.stereotype.Service;
+
+import java.util.Map;
 
 @Service
 public class UserDetailServiceImpl implements UserDetailsService {
@@ -16,15 +19,9 @@ public class UserDetailServiceImpl implements UserDetailsService {
     }
 
     @Override
-    public UserDetails loadUserByUsername(String userName) throws UsernameNotFoundException {
-        Users user = userRepo.findByUserName(userName);
-        if(user!=null){
-            return User.builder()
-                    .username(user.getUserName())
-                    .password(user.getPassword())
-                    .roles(user.getRole().name())
-                    .build();
-        }
-        throw new UsernameNotFoundException("User not found with username: " + userName);
+    public UserDetails loadUserByUsername(String username) {
+        Users user = userRepo.findByUserName(username)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found with username: " + username));
+        return new AppUserPrincipal(user, Map.of());
     }
 }

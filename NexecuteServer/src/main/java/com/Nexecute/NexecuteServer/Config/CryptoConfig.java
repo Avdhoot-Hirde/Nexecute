@@ -1,2 +1,17 @@
-package com.Nexecute.NexecuteServer.Config;public class CryptoConfig {
+package com.Nexecute.NexecuteServer.Config;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.crypto.encrypt.Encryptors;
+import org.springframework.security.crypto.encrypt.TextEncryptor;
+
+@Configuration
+public class CryptoConfig {
+    @Bean
+    TextEncryptor tokenEncyptor(
+            @Value("${app.token-encryptor-password}") String password,@Value("${app.token-encryptor-salt}") String salt
+    ) {
+        return Encryptors.text(password, salt);
+    }
 }
