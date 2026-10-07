@@ -183,6 +183,12 @@ function IDE() {
             Run history
           </PanelTitle>
           <div className="ide-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5">
+            {ide.historyError && (
+              <div role="alert" className="px-3 py-3 text-sm text-rose-300">
+                {ide.historyError}
+                <button type="button" onClick={ide.loadHistory} className="ml-2 underline">Retry</button>
+              </div>
+            )}
             {ide.historyLoading && (
               <p className="px-3 py-4 text-sm text-slate-500">
                 Loading history...
@@ -207,11 +213,12 @@ function IDE() {
                 type="button"
                 key={item.id}
                 onClick={() => ide.loadHistoryItem(item)}
+                disabled={ide.status === "running"}
                 className="ide-history-item mb-2 w-full rounded-xl px-3 py-3 text-left"
               >
                 <div className="flex items-center justify-between gap-2.5">
                   <span className="truncate text-sm font-medium text-slate-200">
-                    {IDE_LANGUAGES.find(
+                    {item.fileName || IDE_LANGUAGES.find(
                       (entry) => entry.value === item.language,
                     )?.label || item.language}
                   </span>
@@ -252,6 +259,7 @@ function IDE() {
               Editor
             </PanelTitle>
             <Editor
+              key={ide.language}
               height="calc(100% - 3rem)"
               language={ide.language}
               value={ide.code}

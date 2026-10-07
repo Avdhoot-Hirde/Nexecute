@@ -8,7 +8,7 @@ class MockSocket {
   readyState = 0;
   handlers = {};
   sent = [];
-  constructor() { MockSocket.current = this; }
+  constructor(url) { this.url = new URL(url); MockSocket.current = this; }
   addEventListener(type, handler) { this.handlers[type] = handler; }
   send(message) { this.sent.push(JSON.parse(message)); }
   emit(message) { this.handlers.message({ data: JSON.stringify(message) }); }
@@ -22,23 +22,38 @@ test('terminal streams chunks and handles repeated, blank and disconnected input
   const previousWindow = globalThis.window;
   globalThis.WebSocket = MockSocket;
   globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
-  globalThis.window = { localStorage: globalThis.localStorage };
+  globalThis.window = { localStorage: globalThis.localStorage, location: { href: 'http://localhost:5173' } };
   try {
     let source = await readFile(new URL('../src/Store/IdeStore.js', import.meta.url), 'utf8');
     source = source
       .replace('"zustand"', JSON.stringify(import.meta.resolve('zustand')))
       .replace('"zustand/middleware"', JSON.stringify(import.meta.resolve('zustand/middleware')))
-      .replace('import { authFetch } from "./AuthStore";',
-        'const authFetch = async () => ({ ok: true, json: async () => ({ stdout: "HTTP output\\n" }) });')
+      .replace('import { authFetch, useAuthStore } from "./AuthStore";',
+        'const useAuthStore = { getState: () => ({ accessToken: "test-token" }) }; const authFetch = async () => ({ ok: true, json: async () => ({ stdout: "HTTP output\\n" }) });')
       .replaceAll('import.meta.env', '({ VITE_IDE_WEBSOCKET_URL: "ws://test/ide" })');
-    const { useIdeStore } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+    const { useIdeStore, IDE_LANGUAGES } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
     const state = () => useIdeStore.getState();
     const output = () => state().consoleLines.map(chunk => chunk.text).join('');
+    assert.equal(IDE_LANGUAGES.length, 10);
+    for (const language of IDE_LANGUAGES) {
+      state().setCode('previous edited or submitted code');
+      state().changeLanguage(language.value);
+      assert.equal(state().file, language.file);
+      assert.equal(state().code, language.snippet);
+    }
+    state().changeLanguage('python');
     state().connectSocket();
     const socket = MockSocket.current;
+    assert.equal(socket.url.searchParams.get('token'), 'test-token');
+    await state().runCode();
+    assert.equal(state().status, 'idle');
+    assert.equal(socket.sent.length, 0);
+    assert.ok(output().includes('Connecting to the live terminal'));
     socket.open();
     state().setStdin('old input');
+    state().setFile('Custom.py');
     await state().runCode();
+    assert.equal(socket.sent[0].file, 'Custom.py');
     assert.equal(socket.sent[0].stdin, '');
     state().setConsoleLines([]);
     socket.emit({ type: 'stdout', data: 'Hel' });
@@ -58,6 +73,9 @@ test('terminal streams chunks and handles repeated, blank and disconnected input
     assert.ok(output().endsWith('Optional: \n'));
     assert.equal(state().stdin, 'old input');
     socket.emit({ type: 'status', status: 'completed' });
+    socket.emit({ type: 'history', entry: { id: 'saved-run', fileName: 'Custom.py', language: 'python', code: 'print(42)', status: 'done', createdAt: '2026-10-06T10:00:00Z' } });
+    assert.equal(state().history[0].id, 'saved-run');
+    assert.equal(state().history[0].fileName, 'Custom.py');
     assert.equal(state().status, 'done');
     assert.equal(state().awaitingInput, false);
     const sentCount = socket.sent.length;

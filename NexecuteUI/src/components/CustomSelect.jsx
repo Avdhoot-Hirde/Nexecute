@@ -43,7 +43,7 @@ export function CustomSelect({
       </ListboxButton>
       <ListboxOptions
         anchor={{ to: "bottom start", gap: 6 }}
-        className="z-[100] w-[var(--button-width)] overflow-hidden rounded-xl border border-violet-400/15 bg-[#0d1020]/95 p-1.5 shadow-2xl shadow-black/60 backdrop-blur-xl outline-none"
+        className="z-[100] max-h-80 w-[var(--button-width)] overflow-y-auto rounded-xl border border-violet-400/15 bg-[#0d1020]/95 p-1.5 shadow-2xl shadow-black/60 backdrop-blur-xl outline-none"
       >
         {options.map((option) => {
           const optionValue =

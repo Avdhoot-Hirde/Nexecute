@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { authFetch } from "./AuthStore";
+import { authFetch, useAuthStore } from "./AuthStore";
 
 const EXECUTE_PATH =
   import.meta.env.VITE_IDE_EXECUTE_PATH ||
@@ -45,10 +45,36 @@ int main() {
     file: "Solution.js",
     snippet: "console.log('Hello World!!');",
   },
+  {
+    value: "c", label: "C", file: "Solution.c",
+    snippet: '#include <stdio.h>\n\nint main(void) {\n  printf("Hello World!!\\n");\n  return 0;\n}',
+  },
+  {
+    value: "go", label: "Go", file: "Solution.go",
+    snippet: 'package main\n\nimport "fmt"\n\nfunc main() {\n  fmt.Println("Hello World!!")\n}',
+  },
+  {
+    value: "rust", label: "Rust", file: "Solution.rs",
+    snippet: 'fn main() {\n  println!("Hello World!!");\n}',
+  },
+  {
+    value: "ruby", label: "Ruby", file: "Solution.rb",
+    snippet: 'puts "Hello World!!"',
+  },
+  {
+    value: "php", label: "PHP", file: "Solution.php",
+    snippet: '<?php\necho "Hello World!!\\n";',
+  },
+  {
+    value: "typescript", label: "TypeScript", file: "Solution.ts",
+    snippet: 'const greeting: string = "Hello World!!";\nconsole.log(greeting);',
+  },
 ];
 
 const initialLanguage = IDE_LANGUAGES[0];
 let ideSocket = null;
+let historyRequest = 0;
+const historyIdentity = state => state.user?.id || state.user?.sub || state.user?.userName || state.isAuthenticated;
 
 function normalizeHistory(payload) {
   const items = payload?.history || payload?.data || payload;
@@ -57,8 +83,9 @@ function normalizeHistory(payload) {
     id: item.id || `${item.createdAt || "run"}-${index}`,
     language: item.language || "python",
     code: item.code || "",
+    fileName: item.fileName || item.file,
     status: item.status || "done",
-    createdAt: item.createdAt || item.timestamp,
+    createdAt: item.createdAt || item.timestamp || item.lastEdit,
   }));
 }
 
@@ -83,6 +110,7 @@ export const useIdeStore = create(
       status: "idle",
       history: [],
       historyLoading: true,
+      historyError: null,
       socketState: WEBSOCKET_URL ? "connecting" : "http",
       awaitingInput: false,
       executionMode: null,
@@ -102,7 +130,12 @@ export const useIdeStore = create(
       pushedUrl: null,
 
       setCode: (code) => set({ code }),
-      setFile: (file) => set({file}),
+      setFile: (file) => set((state) => ({
+        file,
+        githubPath: state.githubPath === state.file ? file : state.githubPath,
+        pushError: null,
+        pushedUrl: null,
+      })),
       setConsoleEntry: (consoleEntry) => set({ consoleEntry }),
       setStdin: (stdin) => set({ stdin }),
       setConsoleLines: (consoleLines) => set({ consoleLines }),
@@ -123,34 +156,38 @@ export const useIdeStore = create(
         }));
       },
 
-      addHistoryItem: (entry) =>
+      addHistoryItem: (entry) => {
+        if (!entry?.id) return;
+        historyRequest += 1;
+        const normalized = normalizeHistory([entry])[0];
         set((state) => ({
-          history: [
-            {
-              id: `${Date.now()}-${Math.random()}`,
-              createdAt: new Date().toISOString(),
-              ...entry,
-            },
-            ...state.history,
-          ],
-        })),
+          history: [normalized, ...state.history.filter(item => item.id !== entry.id)],
+          historyLoading: false,
+          historyError: null,
+        }));
+      },
 
       loadHistory: async () => {
-        set({ historyLoading: true });
+        const request = ++historyRequest;
+        set({ historyLoading: true, historyError: null });
         try {
           const response = await authFetch(HISTORY_PATH);
           if (!response.ok) throw new Error("History is unavailable");
-          set({ history: normalizeHistory(await responseData(response)) });
-        } catch {
-          // The editor remains usable when the optional history API is unavailable.
+          const entries = normalizeHistory(await responseData(response));
+          if (request === historyRequest) set({ history: entries });
+        } catch (error) {
+          if (request === historyRequest) set({ history: [], historyError: error.message });
         } finally {
-          set({ historyLoading: false });
+          if (request === historyRequest) set({ historyLoading: false });
         }
       },
 
       connectSocket: () => {
         if (!WEBSOCKET_URL || ideSocket) return;
-        const socket = new WebSocket(WEBSOCKET_URL);
+        const socketUrl = new URL(WEBSOCKET_URL, window.location.href);
+        const token = useAuthStore.getState().accessToken;
+        if (token) socketUrl.searchParams.set("token", token);
+        const socket = new WebSocket(socketUrl);
         ideSocket = socket;
         set({ socketState: "connecting" });
 
@@ -183,7 +220,11 @@ export const useIdeStore = create(
 
           if (!message || typeof message !== "object") return;
           const text = message.data ?? message.output ?? message.message ?? "";
-          if (["stdout", "output"].includes(message.type)) {
+          if (message.type === "history") {
+            get().addHistoryItem(message.entry);
+          } else if (message.type === "history_error") {
+            set({ historyError: text });
+          } else if (["stdout", "output"].includes(message.type)) {
             get().appendConsole(text);
           } else if (message.type === "stderr") {
             get().appendConsole(text, "error");
@@ -240,21 +281,24 @@ export const useIdeStore = create(
           (item) => item.value === nextLanguage,
         );
         if (!next) return;
-        const shouldReplaceCode =
-          !state.code.trim() || state.code === previous?.snippet;
         const shouldReplacePath =
           !state.githubPath || state.githubPath === previous?.file;
         set({
           language: next.value,
           file: next.file,
-          code: shouldReplaceCode ? next.snippet : state.code,
+          code: next.snippet,
           githubPath: shouldReplacePath ? next.file : state.githubPath,
         });
       },
 
       runCode: async () => {
         const state = get();
+        const historyOwner = historyIdentity(useAuthStore.getState());
         if (state.status === "running") return;
+        if (state.socketState === "connecting") {
+          get().appendConsole("Connecting to the live terminal. Wait for Live connection before running.\n", "muted");
+          return;
+        }
         set({
           status: "running",
           awaitingInput: false,
@@ -272,6 +316,7 @@ export const useIdeStore = create(
               JSON.stringify({
                 type: "execute",
                 language: state.language,
+                file: state.file,
                 code: state.code,
                 stdin: "",
               }),
@@ -291,9 +336,14 @@ export const useIdeStore = create(
               language: state.language,
               code: state.code,
               stdin: state.stdin,
+              file: state.file,
             }),
           });
           const data = await responseData(response);
+          if (historyOwner === historyIdentity(useAuthStore.getState())) {
+            if (data.history) get().addHistoryItem(data.history);
+            if (data.historyError) set({ historyError: data.historyError });
+          }
           if (!response.ok) {
             throw new Error(
               data.stderr || data.error || data.message || "Execution failed",
@@ -304,19 +354,9 @@ export const useIdeStore = create(
           );
           if (data.stderr) get().appendConsole(data.stderr, "error");
           set({ status: "done", awaitingInput: false });
-          get().addHistoryItem({
-            language: state.language,
-            code: state.code,
-            status: "done",
-          });
         } catch (error) {
           get().appendConsole(error.message || "Execution failed", "error");
           set({ status: "error", awaitingInput: false });
-          get().addHistoryItem({
-            language: state.language,
-            code: state.code,
-            status: "error",
-          });
         }
       },
 
@@ -374,21 +414,30 @@ export const useIdeStore = create(
       },
 
       loadHistoryItem: (item) => {
-        if (!item.code) return;
+        if (item.code == null || get().status === "running") return false;
         const language = IDE_LANGUAGES.find(
           (entry) => entry.value === item.language,
         );
         set({
           language: item.language,
-          file: language?.file || get().file,
+          file: item.fileName || item.file || language?.file || get().file,
+          githubPath: item.fileName || item.file || language?.file || get().file,
           code: item.code,
+          stdin: "",
+          consoleEntry: "",
+          status: "idle",
+          awaitingInput: false,
+          executionMode: null,
+          consoleLines: [{ type: "muted", text: "Saved code loaded. Run it to execute again.\n" }],
         });
+        return true;
       },
 
       applySuggestedCode: (code) => set({ code }),
 
       pushToGithub: async () => {
         const state = get();
+        if (state.pushStatus === "pushing") return null;
         const repository = state.githubRepository.trim();
         const branch = state.githubBranch.trim() || "main";
         const path = state.githubPath.trim();
@@ -467,3 +516,14 @@ export const useIdeStore = create(
     },
   ),
 );
+
+// History belongs to the authenticated account, never to browser persistence.
+useAuthStore.subscribe?.((state, previous) => {
+  if (state.isAuthenticated !== previous.isAuthenticated || historyIdentity(state) !== historyIdentity(previous)) {
+    historyRequest += 1;
+    const reconnect = Boolean(ideSocket) && state.isAuthenticated;
+    useIdeStore.getState().disconnectSocket();
+    useIdeStore.setState({ history: [], historyLoading: false, historyError: null });
+    if (reconnect) useIdeStore.getState().connectSocket();
+  }
+});

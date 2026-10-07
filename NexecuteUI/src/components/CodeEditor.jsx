@@ -1,5 +1,6 @@
 import Editor from '@monaco-editor/react';
 import { useEditor } from '../context/EditorContext';
+import { IDE_LANGUAGES } from '../Store/IdeStore';
 
 export default function CodeEditor() {
   const {
@@ -13,21 +14,7 @@ export default function CodeEditor() {
     status,
     run,
   } = useEditor();
-  const snippet={
-    python:"print('Hello World!!')",
-    java:`class Main{
-  public static void main(String[] args){
-    System.out.println("Hello World!!");
-  }
-}`,
-  cpp:`#include<iostream>
-int main(){
-    std::cout<<"Hello World!!"<<std::endl;
-    return 0;
-}
-  `,
-  javascript:"console.log('Hello World!!')"
-  }
+  const snippet = Object.fromEntries(IDE_LANGUAGES.map(item => [item.value, item.snippet]));
   return (
     <div className="w-[min(36rem,calc(100vw-3rem))] max-w-xl bg-[#070914] border border-violet-300/15 rounded-lg overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 bg-black">
@@ -39,10 +26,7 @@ int main(){
           }}
           className="bg-black text-sm p-3 text-gray-300 focus:outline-none rounded-xl"
         >
-          <option value="python">Python</option>
-          <option value="java">Java</option>
-          <option value="cpp">C++</option>
-          <option value="javascript">javascript</option>
+          {IDE_LANGUAGES.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
         </select>
 
         <button
@@ -55,6 +39,7 @@ int main(){
       </div>
 
       <Editor
+        key={language}
         height="70vh"
         width="100%"
         language={language}
